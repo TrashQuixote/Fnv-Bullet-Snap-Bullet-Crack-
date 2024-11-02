@@ -23,6 +23,14 @@ static __forceinline float GetRefDistanceSquare2D(const TESObjectREFR* _refA, co
 	return (Ut_Square(_refB->posX - _refA->posX) + Ut_Square(_refB->posY - _refA->posY));
 }
 
+static __forceinline bool IsPJHitscan(const BGSProjectile* _baseproj) {
+	return (_baseproj->projFlags & BGSProjectile::kFlags_Hitscan) != 0;
+}
+
+static __forceinline bool IsPJHitscan(const Projectile* _proj) {
+	return (((BGSProjectile*)_proj->baseForm)->projFlags & BGSProjectile::kFlags_Hitscan) != 0;
+}
+
 static __forceinline BGSImpactDataSet* GetImpactDataSet(const TESObjectWEAP* _weap) {
 	return _weap->impactDataSet;
 }

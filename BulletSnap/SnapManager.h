@@ -1,15 +1,20 @@
 #pragma once
 #include "Gathering_Utility.h"
-#include <random>
+#include <random> 
 #include <array>
 #include "RoughINIReader.h"
 
 namespace BulletSnap {
-	static TESSound* snap_very_close = nullptr;
 	static TESSound* snap_close = nullptr;
+	static TESSound* snap_close_hc = nullptr;
+	static TESSound* snap_close_vhc = nullptr;
 	static TESSound* snap_dist = nullptr;
+	static TESSound* snap_dist_hc = nullptr;
+	static TESSound* snap_dist_vhc = nullptr;
 	static TESSound* snap_far = nullptr;
-	static TESSound* snap_subsonic = nullptr;
+	static TESSound* snap_far_vhc = nullptr;
+	static TESSound* subsonic_close = nullptr;
+	static TESSound* subsonic_mid = nullptr;
 
 
 	static TESSound* InitTESSound(const char* sound_path, float min_att_dist, float max_att_dist,bool enable_2Dradius = false, UINT32 form_id = 0x21f) {
@@ -56,13 +61,37 @@ namespace BulletSnap {
 	constexpr float cos_45 = 0.707;
 	constexpr float cos_675 = 0.381;
 
-	enum SoundPick{
-		VeryClose = 0,
-		Close = 1,
-		Dis = 2,
-		Far = 3
+	enum DisBasedFlag : UINT8 {
+		VeryClose = 0b00000000,
+		Close = 0b00000001,
+		Dis = 0b00000010,
+		Far = 0b00000011,
+
+		None = 0b00001111
 	};
 
+	enum DmgBasedFlag : UINT8 {
+		general = 0b00010000,
+		highcaliber = 0b00100000,
+		veryhighcaliber = 0b00110000
+	};
+
+	enum SoundPick : UINT8 {
+		general_veryclose = 0b00010000,
+		general_close = 0b00010001,
+		general_dis = 0b00010010,
+		general_far = 0b00010011,
+
+		highcaliber_veryclose = 0b00100000,
+		highcaliber_close = 0b00100001,
+		highcaliber_mid = 0b00100010,
+		highcaliber_far = 0b00100011,
+
+		veryhighcaliber_veryclose = 0b00110000,
+		veryhighcaliber_close = 0b00110001,
+		veryhighcaliber_mid = 0b00110010,
+		veryhighcaliber_far = 0b00110011,
+	};
 
 	static __forceinline NiNode* GetProjectileNode(TESObjectREFR* _ref) {
 		if (IS_ACTOR(_ref)) {
@@ -79,6 +108,7 @@ namespace BulletSnap {
 			Init_Crack_Sound();
 			return false;
 		}
+		if (play_at_pc || IsPJHitscan(_pj) ) _Sound::PlaySound3D(_snap, _pj,true,PC_Ref);
 		if (play_at_pc) _Sound::PlaySound3D(_snap, _pj,true,PC_Ref);
 		else _Sound::PlaySound3D(_snap, _pj);
 		return true;
@@ -106,7 +136,6 @@ namespace BulletSnap {
 		WontSnap = 0b00000010,
 		HaveSnap = 0b00000100
 	};
-
 	enum SettingFlag{
 		impact_pc_snap = 0b00000001,
 		distance_based_snap = 0b00000010,
@@ -116,12 +145,13 @@ namespace BulletSnap {
 
 	struct Snap_Info {
 		UINT8 flag = 0;
-		UINT8 sound_pick = 0;
+		UINT8 sound_pick = DisBasedFlag::None;
 		Snap_Info(UINT8 _flag, UINT8 _sound_pick) : flag(_flag), sound_pick(_sound_pick) {};
 		__forceinline bool IsFlagOn(UINT8 _bit) const { return (flag & _bit) != 0; }
 		__forceinline void SetFlagOn(UINT8 _bit) { flag |= _bit; }
 		__forceinline bool UseSubsonic(const Projectile* _pj) const;
 		TESSound* GetSnapSound(const Projectile* _pj) const;
+		UINT8 GetDmgRange(const Projectile* _pj) const;
 		TESSound* GetSnapSound_ImpactPC(const Projectile* _pj) const;
 	};
 
@@ -136,17 +166,22 @@ namespace BulletSnap {
 		std::array<float, 4> distance_based{ 0 };
 		std::array<UINT16, 4> volume_decrease{ 0 };
 		float subsonic_speed = 26000;
+		float dmg_mid = 30;
+		float dmg_high = 45;
+		float snap_cos_theta = 0;
 
 		__forceinline void SetDistanceBased(UINT8 _index, float distance) { if (_index <= Far) distance_based[_index] = distance;}
 		__forceinline void SetVolumeDecrease(UINT8 _index, UINT16 distance) { if (_index <= Far) volume_decrease[_index] = distance;}
 		__forceinline bool IsSettingFlagOn(UINT8 _bit) const { return (setting_flag & _bit) != 0; }
 		__forceinline void SetSettingFlagOn(UINT8 _bit) { setting_flag |= _bit; }
+		__forceinline float GetDamageMid() const { return dmg_mid; }
+		__forceinline float GetDamageHigh() const { return dmg_high; }
+		__forceinline float GetDamageSnapAngleCos() const { return snap_cos_theta; }
 		static __forceinline SnapMng& snap_manager_instance() {
 			static SnapMng snap_manager_instance;
 			return snap_manager_instance;
 		}
 		
-
 
 		__forceinline void SnapImpact(Projectile* _pj) {
 			if (const auto& iter = SnapMap.find(_pj->refID); iter != SnapMap.end()) {
@@ -161,7 +196,7 @@ namespace BulletSnap {
 
 				if (snap_info.IsFlagOn(GetCloseToPC)) {
 					float dot_res = DotProduct_PJToMainCamera(_pj);
-					if (dot_res <= 0) { 
+					if (dot_res <= snap_manager_instance().GetDamageSnapAngleCos()) {
 						if ( Play_Snap_Sound(_pj, snap_info.GetSnapSound(_pj) ) ) { // do playing sound 
 							snap_info.SetFlagOn(HaveSnap); 
 						}
@@ -197,7 +232,7 @@ namespace BulletSnap {
 		__forceinline void RecordThisPJ(Projectile* _pj) {
 			if (const auto& iter = SnapMap.find(_pj->refID); iter != SnapMap.end()) return;	// has in map
 			float res_dot = DotProduct_PJToMainCamera(_pj);
-			if (res_dot <= 0) { 
+			if (res_dot <= snap_manager_instance().GetDamageSnapAngleCos()) {
 				SnapMap.try_emplace(_pj->refID, Snap_Info{ WontSnap ,0 }); 
 				return;
 			}
@@ -212,30 +247,12 @@ namespace BulletSnap {
 		/*
 			Will Try To Snap When This Proj Can Do
 		*/
-		__forceinline void TryToSnap(Projectile* _pj) {
-			if (const auto& iter = SnapMap.find(_pj->refID); iter != SnapMap.end()) {
-				auto& snap_info = iter->second;
-				if (snap_info.IsFlagOn( (HaveSnap| WontSnap) )) return;
-				if (snap_info.IsFlagOn(GetCloseToPC)){
-					float dot_res = DotProduct_PJToMainCamera(_pj);
-					if (dot_res <= 0){
-						if ( Play_Snap_Sound(_pj, snap_info.GetSnapSound(_pj) ) ) { // do playing sound
-							//gLog.FormattedMessage("PJ %x Pass Sound Play dot_res %.2f", _pj->refID, dot_res);
-							snap_info.SetFlagOn(HaveSnap);
-							return;
-						}
-					}
-					//else gLog.FormattedMessage("PJ %x Get Close To PC dot_res %.2f", _pj->refID, dot_res);
-				}
-			}
-		}
-
 		__forceinline void TryToSnapAlt(Projectile* _pj) {
 			if (const auto& iter = SnapMap.find(_pj->refID); iter != SnapMap.end()) {
 				auto& snap_info = iter->second;
 				if (snap_info.IsFlagOn(HaveSnap)) return;
 				float dot_res = DotProduct_PJToMainCamera(_pj);
-				if (!snap_info.IsFlagOn(GetCloseToPC) && dot_res > 0){
+				if (!snap_info.IsFlagOn(GetCloseToPC) && dot_res > snap_manager_instance().GetDamageSnapAngleCos()){
 					snap_info.SetFlagOn(GetCloseToPC);
 					if (dot_res > cos_15) snap_info.sound_pick = VeryClose;
 					else if (dot_res > cos_45) snap_info.sound_pick = Close;
@@ -244,7 +261,7 @@ namespace BulletSnap {
 				}
 
 				if (snap_info.IsFlagOn(GetCloseToPC)) {
-					if (dot_res <= 0) {
+					if (dot_res <= snap_manager_instance().GetDamageSnapAngleCos()) {
 						if (Play_Snap_Sound(_pj, snap_info.GetSnapSound(_pj))) { // do playing sound
 							//gLog.FormattedMessage("PJ %x Pass Sound Play dot_res %.2f", _pj->refID, dot_res);
 							snap_info.SetFlagOn(HaveSnap);
@@ -264,6 +281,13 @@ namespace BulletSnap {
 		return false;
 	}
 
+	inline UINT8 Snap_Info::GetDmgRange(const Projectile* _pj) const{
+		if (_pj->hitDamage < SnapMng::snap_manager_instance().GetDamageMid()) return DmgBasedFlag::general;
+		else if (_pj->hitDamage < SnapMng::snap_manager_instance().GetDamageHigh()) return DmgBasedFlag::highcaliber;
+		else return DmgBasedFlag::veryhighcaliber;
+	}
+
+	
 	TESSound* Snap_Info::GetSnapSound(const Projectile* _pj) const {
 		UINT8 sound_choose = sound_pick;
 		if (SnapMng::snap_manager_instance().IsSettingFlagOn(distance_based_snap)){
@@ -272,35 +296,61 @@ namespace BulletSnap {
 			while (_sound_index <= Far){
 				float dist = SnapMng::snap_manager_instance().distance_based[_sound_index];
 				if (Dis_Sq_ToPC <= Ut_Square(dist)){
-					sound_choose = _sound_index;
+					sound_choose = _sound_index; 
 					break;
 				}
 				++_sound_index;
 			}
-			if (_sound_index > Far) return nullptr;
+			if (_sound_index > Far) return nullptr; 
+
 		}
-		
-		switch (sound_choose)
+
+		if (UseSubsonic(_pj))
 		{
-		case VeryClose:
-			if (UseSubsonic(_pj)) return snap_subsonic;
-			return snap_very_close;
-		case Close:
-			if (UseSubsonic(_pj)) return snap_subsonic;
+			if (sound_choose <= Close) return subsonic_close;
+			else if (sound_choose == Dis) return subsonic_mid;
+		}
+
+		switch (sound_choose | (GetDmgRange(_pj))  )
+		{
+		case general_veryclose:
+		case general_close:
 			return snap_close;
-		case Dis:
+		case general_dis:
 			return snap_dist;
-		case Far:
+		case general_far:
+		case highcaliber_far:
 			return snap_far;
-		default:
-			return nullptr;
+		case highcaliber_veryclose:
+		case highcaliber_close:
+			return snap_close_hc;
+		case highcaliber_mid:
+			return snap_dist_hc;
+		case veryhighcaliber_veryclose:
+		case veryhighcaliber_close:
+			return snap_close_vhc;
+		case veryhighcaliber_mid:
+			return snap_dist_vhc;
+		case veryhighcaliber_far:
+			return snap_far_vhc;
 		}
 		return nullptr;
 	}
 
-	inline TESSound* Snap_Info::GetSnapSound_ImpactPC(const Projectile* _pj) const{
-		if (UseSubsonic(_pj)) return snap_subsonic;
-		else return snap_very_close;
+	
+	inline TESSound* Snap_Info::GetSnapSound_ImpactPC(const Projectile* _pj) const {
+		if (UseSubsonic(_pj)) return subsonic_close;
+		switch ( GetDmgRange(_pj) )
+		{
+		case DmgBasedFlag::general: 
+			return snap_close;
+		case DmgBasedFlag::highcaliber: 
+			return snap_close_hc;
+		case DmgBasedFlag::veryhighcaliber: 
+			return snap_close_vhc;
+		default:
+			return snap_close;
+		}
 	}
 
 	static inline bool ReadGenericConfig() {
@@ -345,6 +395,9 @@ namespace BulletSnap {
 		raw_type_val = _ini.GetRawTypeVal("General", "SubsonicThresholdSpeed");
 		SnapMng::snap_manager_instance().subsonic_speed = _ini.GetFloat(raw_type_val, 26000);
 
+		raw_type_val = _ini.GetRawTypeVal("General", "SnapAngle");
+		SnapMng::snap_manager_instance().snap_cos_theta = std::cos(_ini.GetFloat(raw_type_val, 90));
+
 		raw_type_val = _ini.GetRawTypeVal("DistanceBased", "VeryClose");
 		SnapMng::snap_manager_instance().SetDistanceBased(VeryClose,_ini.GetFloat(raw_type_val, 0));
 
@@ -356,6 +409,13 @@ namespace BulletSnap {
 
 		raw_type_val = _ini.GetRawTypeVal("DistanceBased", "Far");
 		SnapMng::snap_manager_instance().SetDistanceBased(Far, _ini.GetFloat(raw_type_val, 0));
+
+		raw_type_val = _ini.GetRawTypeVal("DamageBased", "Middledmg");
+		SnapMng::snap_manager_instance().dmg_mid = _ini.GetFloat(raw_type_val, 0);
+
+		raw_type_val = _ini.GetRawTypeVal("DamageBased", "Highdmg");
+		SnapMng::snap_manager_instance().dmg_high = _ini.GetFloat(raw_type_val, 0);
+
 
 		gLog.FormattedMessage("VeryClose %f", SnapMng::snap_manager_instance().distance_based[VeryClose]);
 		gLog.FormattedMessage("Close %f", SnapMng::snap_manager_instance().distance_based[Close]);
@@ -373,11 +433,15 @@ namespace BulletSnap {
 
 	static __forceinline void Init_Crack_Sound()
 	{
-		snap_very_close = InitTESSound(R"(fx\SnapVeryClose\)", 255.0f, 120.96f);
-		snap_close = InitTESSound(R"(fx\SnapClose\)", 255.0f, 120.96f);
-		snap_dist = InitTESSound(R"(fx\SnapDist\)", 255.0f, 120.96f);
-		snap_far = InitTESSound(R"(fx\SnapFar\)", 255.0f, 120.96f);
-		snap_subsonic = InitTESSound(R"(fx\SubSonic\)", 255.0f, 20.48f);
+		snap_close = InitTESSound(R"(fx\GeneralCloseMid\Close\)", 255.0f, 120.96f);
+		snap_close_hc = InitTESSound(R"(fx\HCCloseMid\Close\)", 255.0f, 120.96f);
+		snap_close_vhc = InitTESSound(R"(fx\VeryHighCaliber\Close\)", 255.0f, 120.96f);
+		snap_dist = InitTESSound(R"(fx\GeneralCloseMid\Mid\)", 255.0f, 120.96f);
+		snap_dist_hc = InitTESSound(R"(fx\HCCloseMid\Mid\)", 255.0f, 120.96f);
+		snap_dist_vhc = InitTESSound(R"(fx\VeryHighCaliber\Mid\)", 255.0f, 120.96f);
+		snap_far = InitTESSound(R"(fx\GeneralFar\)", 255.0f, 120.96f);
+		subsonic_close = InitTESSound(R"(fx\SubSonic\Close\)", 255.0f, 120.96f);
+		subsonic_mid = InitTESSound(R"(fx\SubSonic\Mid\)", 255.0f, 120.96f);
 	}
 	static __forceinline void InitSnap() {
 		ReadGenericConfig();
